@@ -36,11 +36,48 @@ def init_params(param: torch.Tensor, init_fn: Callable[[torch.Tensor], torch.Ten
         if RuntimeLayout.from_dtensor(param).is_interleaved:
             init_fn(param._local_tensor)
         else:
-            full_param = torch.empty_like(param.full_tensor(), device=device)
-            init_fn(full_param)
-            param.copy_(distribute_tensor(full_param, param.device_mesh, param.placements))
+            if param.device.type == "cpu":
+                # cpu_offload: shards live on CPU while the mesh talks NCCL, so
+                # full_tensor()/distribute_tensor() collectives are unavailable.
+                _init_dtensor_collective_free(param, init_fn)
+            else:
+                full_param = torch.empty_like(param.full_tensor(), device=device)
+                init_fn(full_param)
+                param.copy_(distribute_tensor(full_param, param.device_mesh, param.placements))
     else:
         init_fn(param)
+
+
+def _init_dtensor_collective_free(
+    param: DTensor, init_fn: Callable[[torch.Tensor], torch.Tensor | None], base_seed: int = 1234
+):
+    """Initialize a DTensor's local shard without any collectives.
+
+    Used when the mesh's process-group backend cannot run collectives on the
+    parameter device (CPU shards under FSDP ``cpu_offload`` with an NCCL-only
+    mesh: ``full_tensor()`` raises ``RuntimeError: No backend type associated
+    with device type cpu``).
+
+    The global RNG is reseeded deterministically from the mesh coordinate:
+
+    * Replicate placements keep one shared seed, so every rank writes
+      identical values (replicas stay consistent).
+    * Shard placements mix the mesh coordinate into the seed, so each rank
+      draws from an independent stream -- statistically equivalent to
+      initializing the full tensor and sharding it for i.i.d. init functions
+      (normal_/uniform_/zeros_/ones_).
+    """
+    local = param.to_local()
+    seed = base_seed
+    if not all(p.is_replicate() for p in param.placements):
+        coord = param.device_mesh.get_coordinate()
+        if coord is not None:
+            for c in coord:
+                seed = (seed * 1000003 + int(c) + 1) % (2**31 - 1)
+    fork_devices = [] if local.device.type == "cpu" else [local.device]
+    with torch.random.fork_rng(devices=fork_devices):
+        torch.manual_seed(seed)
+        init_fn(local)
 
 
 def default_init_weights(module: nn.Module) -> set[str]:

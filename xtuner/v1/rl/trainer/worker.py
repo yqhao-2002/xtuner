@@ -500,6 +500,8 @@ class TrainingWorker(SingleAcceleratorWorker):
             if offload is not None:
                 offload()
         finally:
+            import gc
+            gc.collect()
             DEVICE_MODULE.empty_cache()
             self.onload_model()
             self.onload_optimizer()
