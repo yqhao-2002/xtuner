@@ -53,7 +53,7 @@ class ValueHead(nn.Linear):
             w = self.weight
             b = self.bias
         if loss_ctx is None:
-            values = F.linear(hidden_states, w, b)
+            values = F.linear(hidden_states.to(w.dtype), w, b)
             return None, (values.float(), {})
         else:
             return loss_ctx.forward(hidden_states, w, b)
