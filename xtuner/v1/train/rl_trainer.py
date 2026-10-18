@@ -863,6 +863,30 @@ class BaseRLTrainer:
         if isinstance(self.tokenizer, (PreTrainedTokenizer, PreTrainedTokenizerFast)):
             self.tokenizer.save_pretrained(str(save_hf_path))
 
+        self._verify_hf_export_integrity(save_hf_path)
+
+    def _verify_hf_export_integrity(self, save_hf_path: Path) -> None:
+        """Fail loudly if the exported HF checkpoint is incomplete locally.
+
+        On multi-node clusters every rank writes its shard files into
+        ``hf_dir``. When ``work_dir`` is not on a shared filesystem, shards from
+        remote ranks land on their own nodes and the local checkpoint silently
+        degrades to config/tokenizer files only. Validate that every file
+        referenced by the safetensors index actually exists here.
+        """
+        index_path = save_hf_path / "model.safetensors.index.json"
+        if not index_path.is_file():
+            return
+        weight_map = json.loads(index_path.read_text()).get("weight_map", {})
+        missing = sorted({f for f in weight_map.values() if not (save_hf_path / f).is_file()})
+        if missing:
+            raise RuntimeError(
+                f"HF checkpoint at {save_hf_path} is incomplete: {len(missing)} shard file(s) "
+                f"referenced by model.safetensors.index.json are missing on this node "
+                f"(e.g. {missing[:3]}). On a multi-node cluster, work_dir must be on a "
+                "filesystem shared by all training workers."
+            )
+
     async def _run_initial_evaluate(self) -> None:
         eval_batch: list[list[RolloutState]] = []
         try:
