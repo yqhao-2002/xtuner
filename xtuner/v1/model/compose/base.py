@@ -173,6 +173,10 @@ class BaseComposeModel(BaseModel):
         update_weight_map_from_safetensors_index(weight_map_dict, hf_dir)
 
         if dist.get_rank() == 0:
+            # Authoritative MTP-depth sync: the language model's save ran first,
+            # but vision/projector copy branches re-copied the stale config.json
+            # from the base checkpoint. Re-sync from the language model config.
+            self.language_model._sync_mtp_depth_in_exported_config(hf_dir)
             with open(hf_dir / "model.safetensors.index.json", "w") as f:
                 json.dump(
                     {"weight_map": weight_map_dict, "metadata": self._head_checkpoint_meta()},
