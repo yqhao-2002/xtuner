@@ -1903,10 +1903,6 @@ class BaseModel(nn.Module):
         config_path = Path(hf_dir) / "config.json"
         if not config_path.is_file():
             return
-        if not hasattr(self.config, "mtp_config"):
-            # Vision/projector modules share the copy-config branch but have no
-            # MTP notion; only the language model owns this field.
-            return
         mtp_num_layers = 0
         if getattr(self.config, "mtp_config", None) is not None:
             mtp_num_layers = int(self.config.mtp_config.num_layers)
