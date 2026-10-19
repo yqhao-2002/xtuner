@@ -1880,6 +1880,7 @@ class BaseModel(nn.Module):
                             copy(file, target_path)
                         else:
                             copytree(file, target_path, ignore_dangling_symlinks=True, dirs_exist_ok=True)
+                self._sync_mtp_depth_in_exported_config(hf_dir)
 
             # write or overwrite `model.safetensors.index.json`
             with open(hf_dir / "model.safetensors.index.json", "w") as f:
@@ -1888,6 +1889,29 @@ class BaseModel(nn.Module):
 
         if dist.is_initialized():
             torch.distributed.barrier()
+
+    def _sync_mtp_depth_in_exported_config(self, hf_dir: Path | str) -> None:
+        """Keep the exported config's MTP depth consistent with the trained model.
+
+        The copied config.json comes from the base checkpoint and may declare a
+        different ``mtp_num_hidden_layers`` than the runtime ``MTPConfig`` (or
+        none at all). Consumers (e.g. lmdeploy qwen3_5_mtp) build the draft
+        model from this field; a mismatch against the exported mtp.* weights
+        breaks loading. Models trained without MTP export 0 so no draft is
+        built from stale weights.
+        """
+        config_path = Path(hf_dir) / "config.json"
+        if not config_path.is_file():
+            return
+        mtp_num_layers = 0
+        if getattr(self.config, "mtp_config", None) is not None:
+            mtp_num_layers = int(self.config.mtp_config.num_layers)
+        data = json.loads(config_path.read_text())
+        target = data.get("text_config") if isinstance(data.get("text_config"), dict) else data
+        if target.get("mtp_num_hidden_layers") == mtp_num_layers:
+            return
+        target["mtp_num_hidden_layers"] = mtp_num_layers
+        config_path.write_text(json.dumps(data, indent=2, ensure_ascii=False))
 
     def _load_params(self, checkpoint_loader: HFCheckpointLoader, strict=True) -> tuple:
         matched_hf_keys: set[str] = set(checkpoint_loader.weight_map)
